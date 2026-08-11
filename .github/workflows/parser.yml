@@ -1,12 +1,13 @@
 name: Pluggedin Gmail Parser
 
 on:
-  # Позволяет запускать вручную из интерфейса GitHub
   workflow_dispatch:
-
-  # Позволяет запускать внешний запрос от cron-job.org
   repository_dispatch:
     types: [run-parser]
+
+# Права на запись для автоматических коммитов
+permissions:
+  contents: write
 
 jobs:
   run-script:
