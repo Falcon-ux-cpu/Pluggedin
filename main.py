@@ -13,10 +13,10 @@ from email.mime.image import MIMEImage
 
 # --- Настройки ---
 BASE_URL = "https://pluggedin.ru"
-FEED_URL = "https://pluggedin.ru/news"  # Страница со списком свежих статей
+FEED_URL = "https://pluggedin.ru/news"  # Обновленный URL ленты новостей
 SENT_FILE = "sent_articles.json"
 
-# Данные авторизации (берем из Secrets GitHub)
+# Данные авторизации (из Secrets GitHub)
 GMAIL_USER = os.environ.get("GMAIL_USER")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", GMAIL_USER)
@@ -42,21 +42,21 @@ def save_sent_articles(sent_set):
 
 
 def get_latest_article_urls():
-    """Собирает ссылки на статьи с главной страницы/раздела /open."""
+    """Собирает ссылки на статьи с раздела /news."""
     try:
         response = requests.get(FEED_URL, headers=HEADERS, timeout=10)
         response.raise_for_status()
     except Exception as e:
-        print(f"Ошибка получения списка статей: {e}")
+        print(f"Ошибка получения списка статей с {FEED_URL}: {e}")
         return []
 
     soup = BeautifulSoup(response.text, "html.parser")
     urls = []
     
-    # Поиск ссылок вида /open/название-статьи-id
+    # Поиск ссылок вида /news/... или /open/... с ID на конце
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if re.search(r"/open/[^/]+-\d+", href):
+        if re.search(r"/(news|open)/[^/]+-\d+", href):
             full_url = urljoin(BASE_URL, href)
             if full_url not in urls:
                 urls.append(full_url)
@@ -102,8 +102,8 @@ def parse_and_send_article(article_url, sent_set):
         # Подготовка структуры письма
         msg = MIMEMultipart("related")
         
-        # Обязательное условие: тема письма содержит слово Pluggedin
-        msg["Subject"] = f"[Pluggedin]"
+        # Тема письма содержит слово Pluggedin
+        msg["Subject"] = f"[Pluggedin] {title}"
         msg["From"] = GMAIL_USER
         msg["To"] = RECIPIENT_EMAIL
 
@@ -131,7 +131,7 @@ def parse_and_send_article(article_url, sent_set):
                     cid = f"img_{img_counter}@pluggedin"
                     img_tag["src"] = f"cid:{cid}"
 
-                    # Сброс/оптимизация ширины и стилей
+                    # Сброс и оптимизация ширины и стилей
                     if img_tag.has_attr("style"):
                         del img_tag["style"]
                     if img_tag.has_attr("width"):
@@ -159,15 +159,14 @@ def parse_and_send_article(article_url, sent_set):
                 full_img_url = urljoin(BASE_URL, src)
                 process_image(full_img_url, img)
 
-        # Оптимизация стилей всех тегов внутри тела
+        # Оптимизация стилей абзацев и заголовков
         for tag in body_div.find_all(True):
-            # Гарантируем корректность контейнеров
             if tag.name == "p":
                 tag["style"] = "line-height: 1.6; font-size: 16px; margin-bottom: 14px; color: #222222;"
             elif tag.name in ["h2", "h3"]:
                 tag["style"] = "margin-top: 24px; margin-bottom: 12px; font-weight: bold; color: #111111;"
 
-        # Сборка финального HTML письма
+        # Сборка HTML письма
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -199,7 +198,6 @@ def parse_and_send_article(article_url, sent_set):
         msg_alternative = MIMEMultipart("alternative")
         msg.attach(msg_alternative)
 
-        # Текстовая версия
         text_body = f"{title}\n{article_date}\n\nСсылка: {article_url}"
         msg_alternative.attach(MIMEText(text_body, "plain", "utf-8"))
         msg_alternative.attach(MIMEText(html_content, "html", "utf-8"))
@@ -224,7 +222,7 @@ def parse_and_send_article(article_url, sent_set):
         return True
 
     finally:
-        # Гарантированное удаление временных файлов после отправки
+        # Автоматическая очистка временных файлов
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
@@ -233,11 +231,11 @@ def main():
     urls = get_latest_article_urls()
 
     if not urls:
-        print("Новых статей на странице не обнаружено.")
+        print("Новых статей на странице /news не обнаружено.")
         return
 
     new_articles_count = 0
-    # Проходим по статьям (начиная со старых к новым)
+    # Проходим от более старых статей к свежим
     for url in reversed(urls):
         if url not in sent_set:
             success = parse_and_send_article(url, sent_set)
