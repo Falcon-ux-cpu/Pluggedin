@@ -103,7 +103,7 @@ def parse_and_send_article(article_url, sent_set):
         msg = MIMEMultipart("related")
         
         # Обязательное условие: тема письма содержит слово Pluggedin
-        msg["Subject"] = f"[Pluggedin] {title}"
+        msg["Subject"] = f"[Pluggedin]"
         msg["From"] = GMAIL_USER
         msg["To"] = RECIPIENT_EMAIL
 
