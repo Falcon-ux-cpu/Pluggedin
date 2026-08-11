@@ -13,7 +13,7 @@ from email.mime.image import MIMEImage
 
 # --- Настройки ---
 BASE_URL = "https://pluggedin.ru"
-FEED_URL = "https://pluggedin.ru/open"  # Страница со списком свежих статей
+FEED_URL = "https://pluggedin.ru/news"  # Страница со списком свежих статей
 SENT_FILE = "sent_articles.json"
 
 # Данные авторизации (берем из Secrets GitHub)
