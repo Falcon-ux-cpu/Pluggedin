@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import shutil
 import smtplib
 import tempfile
@@ -13,10 +14,9 @@ from email.mime.image import MIMEImage
 
 # --- Настройки ---
 BASE_URL = "https://pluggedin.ru"
-FEED_URL = "https://pluggedin.ru/news"  # Обновленный URL ленты новостей
+FEED_URL = "https://pluggedin.ru/news"
 SENT_FILE = "sent_articles.json"
 
-# Данные авторизации (из Secrets GitHub)
 GMAIL_USER = os.environ.get("GMAIL_USER")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL", GMAIL_USER)
@@ -30,7 +30,10 @@ def load_sent_articles():
     if os.path.exists(SENT_FILE):
         try:
             with open(SENT_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
+                content = f.read().strip()
+                if not content:
+                    return set()
+                return set(json.loads(content))
         except Exception as e:
             print(f"Ошибка чтения {SENT_FILE}: {e}")
     return set()
@@ -42,7 +45,6 @@ def save_sent_articles(sent_set):
 
 
 def get_latest_article_urls():
-    """Собирает ссылки на статьи с раздела /news."""
     try:
         response = requests.get(FEED_URL, headers=HEADERS, timeout=10)
         response.raise_for_status()
@@ -53,7 +55,6 @@ def get_latest_article_urls():
     soup = BeautifulSoup(response.text, "html.parser")
     urls = []
     
-    # Поиск ссылок вида /news/... или /open/... с ID на конце
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if re.search(r"/(news|open)/[^/]+-\d+", href):
@@ -71,38 +72,32 @@ def parse_and_send_article(article_url, sent_set):
         res.raise_for_status()
     except Exception as e:
         print(f"Не удалось загрузить страницу статьи: {e}")
-        return False
+        return False, False
 
     soup = BeautifulSoup(res.text, "html.parser")
 
-    # 1. Извлечение заголовка
     h1_tag = soup.find("h1", {"itemprop": "headline"})
     title = h1_tag.get_text(strip=True) if h1_tag else "Без названия"
 
-    # 2. Извлечение даты
     date_tag = soup.find("span", class_="dateArticle")
     article_date = date_tag.get_text(strip=True) if date_tag else ""
 
-    # 3. Извлечение главного (титульного) изображения
     top_img_tag = soup.find("img", {"itemprop": "image"})
     top_img_url = None
     if top_img_tag and top_img_tag.get("src"):
         top_img_url = urljoin(BASE_URL, top_img_tag["src"])
 
-    # 4. Извлечение тела статьи
     body_div = soup.find("div", class_="open-article-text")
     if not body_div:
         print("Тело статьи (open-article-text) не найдено.")
-        return False
+        return False, False
 
-    # Создаем временную папку для локальной загрузки изображений
     temp_dir = tempfile.mkdtemp(prefix="pluggedin_imgs_")
 
     try:
-        # Подготовка структуры письма
         msg = MIMEMultipart("related")
         
-        # Тема письма содержит слово Pluggedin
+        # Тема письма строго содержит только Pluggedin
         msg["Subject"] = "Pluggedin"
         msg["From"] = GMAIL_USER
         msg["To"] = RECIPIENT_EMAIL
@@ -110,7 +105,6 @@ def parse_and_send_article(article_url, sent_set):
         img_counter = 0
         inline_images = []
 
-        # Функция для скачивания и добавления вложения CID
         def process_image(img_url, img_tag):
             nonlocal img_counter
             try:
@@ -127,11 +121,9 @@ def parse_and_send_article(article_url, sent_set):
                     with open(filepath, "wb") as f:
                         f.write(img_res.content)
 
-                    # CID для связи изображения внутри HTML
                     cid = f"img_{img_counter}@pluggedin"
                     img_tag["src"] = f"cid:{cid}"
 
-                    # Сброс и оптимизация ширины и стилей
                     if img_tag.has_attr("style"):
                         del img_tag["style"]
                     if img_tag.has_attr("width"):
@@ -145,28 +137,24 @@ def parse_and_send_article(article_url, sent_set):
             except Exception as err:
                 print(f"Ошибка загрузки изображения {img_url}: {err}")
 
-        # Обработка титульного изображения (если есть)
         top_img_html = ""
         if top_img_url:
             dummy_img = soup.new_tag("img", src=top_img_url, alt=title)
             process_image(top_img_url, dummy_img)
             top_img_html = str(dummy_img)
 
-        # Обработка всех изображений в теле статьи
         for img in body_div.find_all("img"):
             src = img.get("src")
             if src:
                 full_img_url = urljoin(BASE_URL, src)
                 process_image(full_img_url, img)
 
-        # Оптимизация стилей абзацев и заголовков
         for tag in body_div.find_all(True):
             if tag.name == "p":
                 tag["style"] = "line-height: 1.6; font-size: 16px; margin-bottom: 14px; color: #222222;"
             elif tag.name in ["h2", "h3"]:
                 tag["style"] = "margin-top: 24px; margin-bottom: 12px; font-weight: bold; color: #111111;"
 
-        # Сборка HTML письма
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -202,7 +190,6 @@ def parse_and_send_article(article_url, sent_set):
         msg_alternative.attach(MIMEText(text_body, "plain", "utf-8"))
         msg_alternative.attach(MIMEText(html_content, "html", "utf-8"))
 
-        # Прикрепление сохраненных картинок к письму
         for filepath, cid, ext in inline_images:
             with open(filepath, "rb") as f:
                 subtype = "jpeg" if ext in ["jpg", "jpeg"] else ext
@@ -211,7 +198,6 @@ def parse_and_send_article(article_url, sent_set):
                 img_data.add_header("Content-Disposition", "inline", filename=os.path.basename(filepath))
                 msg.attach(img_data)
 
-        # Отправка через Gmail SMTP
         print("Отправка письма...")
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
@@ -219,10 +205,19 @@ def parse_and_send_article(article_url, sent_set):
 
         print(f"Успешно отправлено: {title}")
         sent_set.add(article_url)
-        return True
+        return True, False
+
+    except smtplib.SMTPDataError as smtp_err:
+        if "Daily user sending limit exceeded" in str(smtp_err):
+            print("\n[ВНИМАНИЕ] Превышен суточный лимит отправки писем Gmail!")
+            return False, True
+        print(f"SMTP Ошибка: {smtp_err}")
+        return False, False
+    except Exception as err:
+        print(f"Ошибка при отправке: {err}")
+        return False, False
 
     finally:
-        # Автоматическая очистка временных файлов
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
@@ -235,13 +230,19 @@ def main():
         return
 
     new_articles_count = 0
-    # Проходим от более старых статей к свежим
+    limit_reached = False
+
     for url in reversed(urls):
         if url not in sent_set:
-            success = parse_and_send_article(url, sent_set)
+            success, limit_reached = parse_and_send_article(url, sent_set)
             if success:
                 new_articles_count += 1
                 save_sent_articles(sent_set)
+                time.sleep(2)  # Пауза между отправками
+
+            if limit_reached:
+                print("Остановка работы из-за достижения лимита Gmail.")
+                break
 
     print(f"\nЗавершено. Обработано новых статей: {new_articles_count}")
 
