@@ -27,6 +27,7 @@ HEADERS = {
 
 
 def load_sent_articles():
+    """Загружает список отправленных ID статей с защитой от пустого файла."""
     if os.path.exists(SENT_FILE):
         try:
             with open(SENT_FILE, "r", encoding="utf-8") as f:
@@ -40,11 +41,19 @@ def load_sent_articles():
 
 
 def save_sent_articles(sent_set):
+    """Сохраняет список ID отправленных статей."""
     with open(SENT_FILE, "w", encoding="utf-8") as f:
         json.dump(list(sent_set), f, ensure_ascii=False, indent=2)
 
 
+def extract_article_id(url):
+    """Извлекает уникальный цифровой ID из ссылки на статью (например, 61086)."""
+    match = re.search(r"-(\d+)$", url.rstrip("/"))
+    return match.group(1) if match else None
+
+
 def get_latest_article_urls():
+    """Собирает уникальные статьи с сайта по их ID."""
     try:
         response = requests.get(FEED_URL, headers=HEADERS, timeout=10)
         response.raise_for_status()
@@ -53,20 +62,25 @@ def get_latest_article_urls():
         return []
 
     soup = BeautifulSoup(response.text, "html.parser")
-    urls = []
-    
+    seen_ids = set()
+    unique_articles = []
+
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if re.search(r"/(news|open)/[^/]+-\d+", href):
             full_url = urljoin(BASE_URL, href)
-            if full_url not in urls:
-                urls.append(full_url)
+            art_id = extract_article_id(full_url)
+            
+            # Фильтруем дубликаты еще на этапе сбора
+            if art_id and art_id not in seen_ids:
+                seen_ids.add(art_id)
+                unique_articles.append((art_id, full_url))
                 
-    return urls
+    return unique_articles
 
 
-def parse_and_send_article(article_url, sent_set):
-    print(f"\n--- Обработка статьи: {article_url} ---")
+def parse_and_send_article(article_url, art_id):
+    print(f"\n--- Обработка статьи ID {art_id}: {article_url} ---")
     try:
         res = requests.get(article_url, headers=HEADERS, timeout=15)
         res.raise_for_status()
@@ -97,7 +111,7 @@ def parse_and_send_article(article_url, sent_set):
     try:
         msg = MIMEMultipart("related")
         
-        # Тема письма строго содержит только Pluggedin
+        # Тема письма строго один слово Pluggedin
         msg["Subject"] = "Pluggedin"
         msg["From"] = GMAIL_USER
         msg["To"] = RECIPIENT_EMAIL
@@ -204,7 +218,6 @@ def parse_and_send_article(article_url, sent_set):
             server.sendmail(GMAIL_USER, RECIPIENT_EMAIL, msg.as_string())
 
         print(f"Успешно отправлено: {title}")
-        sent_set.add(article_url)
         return True, False
 
     except smtplib.SMTPDataError as smtp_err:
@@ -223,22 +236,22 @@ def parse_and_send_article(article_url, sent_set):
 
 def main():
     sent_set = load_sent_articles()
-    urls = get_latest_article_urls()
+    articles = get_latest_article_urls()
 
-    if not urls:
+    if not articles:
         print("Новых статей на странице /news не обнаружено.")
         return
 
     new_articles_count = 0
-    limit_reached = False
 
-    for url in reversed(urls):
-        if url not in sent_set:
-            success, limit_reached = parse_and_send_article(url, sent_set)
+    for art_id, url in reversed(articles):
+        if art_id not in sent_set:
+            success, limit_reached = parse_and_send_article(url, art_id)
             if success:
-                new_articles_count += 1
+                sent_set.add(art_id)
                 save_sent_articles(sent_set)
-                time.sleep(2)  # Пауза между отправками
+                new_articles_count += 1
+                time.sleep(2)  # Пауза между отправкой писем
 
             if limit_reached:
                 print("Остановка работы из-за достижения лимита Gmail.")
